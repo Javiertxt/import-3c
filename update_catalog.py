@@ -9,7 +9,7 @@ def download_csv(url):
     response = requests.get(url)
     response.raise_for_status()
     try:
-        return pd.read_csv(StringIO(response.text), error_bad_lines=False, warn_bad_lines=True)
+        return pd.read_csv(StringIO(response.text), on_bad_lines='warn')
     except pd.errors.ParserError as e:
         print(f"Error parsing {url}: {e}")
         return pd.DataFrame()
