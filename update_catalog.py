@@ -1,38 +1,40 @@
+import os
 import requests
 import pandas as pd
-from io import BytesIO
-import boto3
-from datetime import datetime
+from sqlalchemy import create_engine
+import pymysql
 
-# Configuración de AWS
-AWS_ACCESS_KEY_ID = 'tu_access_key'
-AWS_SECRET_ACCESS_KEY = 'tu_secret_key'
-AWS_STORAGE_BUCKET_NAME = 'tu_bucket_name'
+# Deshabilitar advertencias de verificación SSL
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def download_csv(url, encoding='utf-8'):
     try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an HTTPError on bad responses
-        return pd.read_csv(BytesIO(response.content), encoding=encoding, on_bad_lines='skip')
-    except UnicodeDecodeError as e:
-        print(f"Error decoding CSV from {url}: {e}")
-        raise
-    except Exception as e:
+        response = requests.get(url, verify=False)
+        response.raise_for_status()
+        return response.content.decode(encoding)
+    except requests.exceptions.RequestException as e:
         print(f"Error downloading CSV from {url}: {e}")
         raise
 
-def save_to_s3(file_buffer, filename):
+def download_google_sheet(url, sheet_name=0):
     try:
-        s3_resource = boto3.resource(
-            's3',
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-        )
-        s3_resource.Object(AWS_STORAGE_BUCKET_NAME, filename).put(Body=file_buffer.getvalue())
-        print(f"File {filename} uploaded to S3 bucket {AWS_STORAGE_BUCKET_NAME}.")
-    except Exception as e:
-        print(f"Error saving file to S3: {e}")
+        sheet_url = url.replace('/edit?usp=sharing', '/export?format=csv&gid=0')
+        response = requests.get(sheet_url, verify=False)
+        response.raise_for_status()
+        return response.content.decode('utf-8')
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading Google Sheet from {url}: {e}")
         raise
+
+def csv_to_dataframe(csv_content):
+    from io import StringIO
+    return pd.read_csv(StringIO(csv_content))
+
+def save_to_database(df, table_name, connection_string):
+    engine = create_engine(connection_string)
+    with engine.connect() as connection:
+        df.to_sql(table_name, con=connection, if_exists='replace', index=False)
 
 # URLs de los archivos CSV
 cecotec_1_url = 'https://cecobi.cecotec.cloud/ws/getstockfeedb2c.php?etiqueta=DROPES'
@@ -41,25 +43,24 @@ megasur_url = 'https://www.megasur.es/download/file-rate/?file=csv-prestashop&u=
 globomatik_url = 'https://multimedia.globomatik.net/csv/import.php?username=36268&password=87596029&mode=all&type=default'
 
 # Descargar los archivos CSV
-cecotec_1 = download_csv(cecotec_1_url, encoding='latin1')
-cecotec_2 = download_csv(cecotec_2_url, encoding='latin1')
-megasur = download_csv(megasur_url, encoding='latin1')
+cecotec_1 = download_csv(cecotec_1_url)
+cecotec_2 = download_google_sheet(cecotec_2_url)
+megasur = download_csv(megasur_url)
 globomatik = download_csv(globomatik_url, encoding='latin1')
 
-# Crear un archivo Excel con varias hojas
-excel_buffer = BytesIO()
-with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-    cecotec_1.to_excel(writer, sheet_name='Cecotec1', index=False)
-    cecotec_2.to_excel(writer, sheet_name='Cecotec2', index=False)
-    megasur.to_excel(writer, sheet_name='Megasur', index=False)
-    globomatik.to_excel(writer, sheet_name='Globomatik', index=False)
-    writer.save()
+# Convertir CSV a DataFrame
+cecotec_1_df = csv_to_dataframe(cecotec_1)
+cecotec_2_df = csv_to_dataframe(cecotec_2)
+megasur_df = csv_to_dataframe(megasur)
+globomatik_df = csv_to_dataframe(globomatik)
 
-# Guardar el archivo Excel en S3
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-save_to_s3(excel_buffer, f'combined_catalog_{timestamp}.xlsx')
+# Guardar DataFrame en la base de datos
+db_connection_string = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@localhost/dbname')
+save_to_database(cecotec_1_df, 'cecotec_1', db_connection_string)
+save_to_database(cecotec_2_df, 'cecotec_2', db_connection_string)
+save_to_database(megasur_df, 'megasur', db_connection_string)
+save_to_database(globomatik_df, 'globomatik', db_connection_string)
 
-# Guardar el archivo Excel en S3
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-save_to_s3(excel_buffer, f'combined_catalog_{timestamp}.xlsx')
+print("Proceso completado")
+
 
